@@ -5,9 +5,12 @@ import pandas as pd
 from collections import Counter
 import numpy as np
 from PIL import ImageGrab, Image
-from nicegui import ui, events
+from nicegui import ui, events, app
+import os
+import uuid
 from pathlib import Path
 import io
+
 
 missions_dict_raw={}
 final_df = pd.DataFrame()
@@ -45,9 +48,12 @@ def cut_image(image_path, left_name, right_name):
     right_box = (width // 2, 0, width, height)
 
     left_image = image.crop(left_box)
+    left_image = left_image.convert('RGB')
     right_image = image.crop(right_box)
+    right_image = right_image.convert('RGB')
 
-    return left_image.save(f'{left_name}.png'), right_image.save(f'{right_name}.png')
+    left_image.save(f'{left_name}.png')
+    right_image.save(f'{right_name}.png')
 
 
 def _get_text_from_image(image_path: str):
@@ -147,13 +153,11 @@ def get_counters(filtered_result):
                 quest_counter.update([entry['objective']['verb']])
             else:
                 None
-        except:
-            pass
+        except Exception as e:
+            print(f'{e} at {entry}')
 
-    try:
+    if None in quest_counter:
         quest_counter.pop(None)
-    except:
-        pass
 
     return hero_counter, quest_counter
 
@@ -203,13 +207,12 @@ def get_mission(hero):
 
 
 def sum_mission_count(mission):
-    sum=0
-    for quest in quest_counter.keys():
-        if mission == None:
-            return 0
-        if quest in mission and mission != None:
-            sum += 1
-    return sum
+
+    global quest_counter
+
+    if not isinstance(mission, str):
+        return 0
+    return sum(1 for quest in quest_counter.keys() if quest in mission)
 
 
 def get_results(hero_counter):
@@ -221,14 +224,6 @@ def get_results(hero_counter):
 
     return filtered_result_df
 
-path = Path('.')/ 'photos'
-
-cut_image(Path('.')/ 'photos' / 'clipboard_image.png', path/'left_1', path/'left_2')
-cut_image(Path('.')/ 'photos' / 'clipboard_image_2.png', path/'left_3', path/'left_4')
-cut_image(Path('.')/ 'photos' / 'clipboard_image_3.png', path/'left_5', path/'left_6')
-
-images_list = [path/"left_1.png", path/"left_2.png", path/"left_3.png",
-               path/"left_4.png", path/"left_5.png", path/"left_6.png"]
 
 def main(images_list):
 
@@ -244,6 +239,7 @@ def main(images_list):
 
     results_df['mission'] = results_df['hero'].apply(get_mission)
 
+    results_df['mission'] = results_df['mission'].fillna("")
     results_df['mission_count'] = results_df['mission'].apply(sum_mission_count)
 
     results_df['priority'] = results_df['count'] + results_df['mission_count']
@@ -258,19 +254,37 @@ path = Path('photos')
 path.mkdir(parents=True, exist_ok=True)
 
 uploaded_file_paths = []
+uploaded_images = []
+
+os.makedirs('/tmp/photos', exist_ok=True)
+app.add_static_files('/photos', '/tmp/photos')
 
 def handle_upload(e: events.UploadEventArguments):
 
-    file_path = path / e.name
+    global hero_counter, quest_counter, missions_dict_raw
 
+    hero_counter = Counter()
+    quest_counter = Counter()
+
+    file_path = path / e.name
     if file_path in uploaded_file_paths:
         ui.notify(f"'{file_path.name}' has already been uploaded!", close_button='OK')
         return
 
+    # Save to disk
     with open(file_path, 'wb') as f:
         f.write(e.content.read())
+
     uploaded_file_paths.append(file_path)
     print(f"File uploaded: {file_path}")
+
+    left_out = path / f"{file_path.stem}_left"
+    right_out = path / f"{file_path.stem}_right"
+
+    cut_image(file_path, left_out, right_out)
+
+    uploaded_images.append(Path(str(left_out)+'.png'))
+    uploaded_images.append(Path(str(right_out)+'.png'))
 
 def process_all():
 
@@ -284,7 +298,7 @@ def process_all():
         ui.notify("No files uploaded yet!", close_button='OK')
         return
 
-    final_df = main(uploaded_file_paths)  # run your processing function
+    final_df = main(uploaded_images)
 
     if final_df.empty:
         ui.notify("No data to display!", close_button='OK')
@@ -319,17 +333,17 @@ with left_drawer:
 
 results_table = ui.table(
         columns=[
-            {'name': 'hero', 'label': 'hero', 'field': 'hero'},
-            {'name': 'count', 'label': 'count', 'field': 'count'},
-            {'name': 'role', 'label': 'role', 'field': 'role'},
-            {'name': 'mission', 'label': 'mission', 'field': 'mission'},
-            {'name': 'mission_count', 'label': 'mission_count', 'field': 'mission_count'},
-            {'name': 'priority', 'label': 'priority', 'field': 'priority'},
+            {'name': 'hero', 'label': 'Hero', 'field': 'hero'},
+            {'name': 'count', 'label': 'Quests Count', 'field': 'count'},
+            {'name': 'role', 'label': 'Role', 'field': 'role'},
+            {'name': 'mission', 'label': 'Bonus Quests', 'field': 'mission'},
+            {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count'},
+            {'name': 'priority', 'label': 'Total', 'field': 'priority'},
         ],
         rows=final_df.to_dict(orient='records'),
                 pagination={
-                    'rowsPerPage': 10,               # default rows per page
-                    'rowsPerPageOptions': [5, 10, 25]  # user can choose how many to view
+                    'rowsPerPage': 10,
+                    'rowsPerPageOptions': [5, 10, 25]
                 }
             )
 
