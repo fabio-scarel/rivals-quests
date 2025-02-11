@@ -5,11 +5,12 @@ import pandas as pd
 from collections import Counter
 import numpy as np
 from PIL import ImageGrab, Image
-from nicegui import ui
+from nicegui import ui, events
 from pathlib import Path
+import io
 
 missions_dict_raw={}
-
+final_df = pd.DataFrame()
 hero_counter = Counter()
 quest_counter = Counter()
 
@@ -251,7 +252,85 @@ def main(images_list):
 
     return final_df
 
-final_df = main(images_list)
+# final_df = main(images_list)
 
-print(final_df.head(10))
+path = Path('photos')
+path.mkdir(parents=True, exist_ok=True)
 
+uploaded_file_paths = []
+
+def handle_upload(e: events.UploadEventArguments):
+
+    file_path = path / e.name
+
+    if file_path in uploaded_file_paths:
+        ui.notify(f"'{file_path.name}' has already been uploaded!", close_button='OK')
+        return
+
+    with open(file_path, 'wb') as f:
+        f.write(e.content.read())
+    uploaded_file_paths.append(file_path)
+    print(f"File uploaded: {file_path}")
+
+def process_all():
+
+    global hero_counter, quest_counter
+    hero_counter = Counter()
+    quest_counter = Counter()
+
+    final_df = pd.DataFrame()
+
+    if not uploaded_file_paths:
+        ui.notify("No files uploaded yet!", close_button='OK')
+        return
+
+    final_df = main(uploaded_file_paths)  # run your processing function
+
+    if final_df.empty:
+        ui.notify("No data to display!", close_button='OK')
+        return
+
+    results_table.update_from_pandas(final_df)
+
+# Function to handle drawer visibility
+left_drawer_visible = True
+def toggle_drawer():
+    if toggle_switch.value:
+        left_drawer.show()
+    else:
+        left_drawer.hide()
+
+ui.label('Results').classes('text-lg font-bold mt-4')
+with ui.row().style('justify-content: space-between; width: 100%; height: 100%; align-items: center;'):
+    toggle_switch = ui.switch('Show Images', value=left_drawer_visible, on_change=toggle_drawer)
+
+left_drawer = ui.left_drawer(top_corner=True, bottom_corner=True). \
+    style('background-color: #1a1e2c').bind_visibility_from(toggle_switch, 'value'). \
+        props('width=358 bordered')
+
+with left_drawer:
+    ui.button("Process all uploaded images", on_click=process_all)
+    ui.upload(
+        label='Upload Images',
+        auto_upload=True,
+        on_upload=handle_upload,
+        multiple=True
+    ).props('accept=".jpeg,.jpg,.png"')
+
+results_table = ui.table(
+        columns=[
+            {'name': 'hero', 'label': 'hero', 'field': 'hero'},
+            {'name': 'count', 'label': 'count', 'field': 'count'},
+            {'name': 'role', 'label': 'role', 'field': 'role'},
+            {'name': 'mission', 'label': 'mission', 'field': 'mission'},
+            {'name': 'mission_count', 'label': 'mission_count', 'field': 'mission_count'},
+            {'name': 'priority', 'label': 'priority', 'field': 'priority'},
+        ],
+        rows=final_df.to_dict(orient='records'),
+                pagination={
+                    'rowsPerPage': 10,               # default rows per page
+                    'rowsPerPageOptions': [5, 10, 25]  # user can choose how many to view
+                }
+            )
+
+ui.run()
