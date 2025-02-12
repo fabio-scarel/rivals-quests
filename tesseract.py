@@ -95,7 +95,7 @@ def _parse_challenge_data(text: str):
     heroes_pattern = r"\b[A-Z]+(?:[ & ]?[-&]?[ ]?[\n]?[ \n]?[ \n ]?[A-Z]+)*\b"
     all_caps_words = re.findall(heroes_pattern, text)
     # Filter out any uppercase words not considered heroes
-    exclusions = {"DEAL", "DAMAGE", "AS", "OR", "SS", "LL",
+    exclusions = {"DEAL", "DAMAGE", "AS", "OR", "SS", "LL", "SSS",
                   "ENEMIES", "ASSIST", "KO", "NS", "INFLICT"}
     heroes = [word for word in all_caps_words if word not in exclusions]
 
