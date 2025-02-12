@@ -10,12 +10,12 @@ import os
 import uuid
 from pathlib import Path
 import io
+from google.cloud import storage
+import gcsfs
+import requests
 
 
-missions_dict_raw={}
-final_df = pd.DataFrame()
-hero_counter = Counter()
-quest_counter = Counter()
+bucket_name = "rivals-quests"
 
 role_mission_index = {'Vanguards': ['Take', 'Inflict'],
                       'Duelists': ['Inflict', 'Defeat'],
@@ -36,28 +36,21 @@ marvel_rivals_characters = {
         "ROCKET RACCOON"]
 }
 
-def cut_image(image_path, left_name, right_name):
 
-    image = Image.open(image_path)
+def _get_text_from_image(image_url: str):
 
-    # Get image dimensions
-    width, height = image.size
+    response = requests.get(image_url, stream=True)
 
-    # Split the image vertically
-    left_box = (0, 0, width // 2, height)
-    right_box = (width // 2, 0, width, height)
+    if response.status_code != 200:
+        raise ValueError(f"Failed to download image: {image_url}")
 
-    left_image = image.crop(left_box)
-    left_image = left_image.convert('RGB')
-    right_image = image.crop(right_box)
-    right_image = right_image.convert('RGB')
+    # Convert image to a file-like object
+    image_bytes = io.BytesIO(response.content)
 
-    left_image.save(f'{left_name}.png')
-    right_image.save(f'{right_name}.png')
+    # Open image with PIL and extract text
+    text = pytesseract.image_to_string(Image.open(image_bytes))
 
-
-def _get_text_from_image(image_path: str):
-    return pytesseract.image_to_string(Image.open(image_path))
+    return text
 
 
 def _parse_challenge_data(text: str):
@@ -65,9 +58,6 @@ def _parse_challenge_data(text: str):
     # 2. Time (e.g. "13D 4H")
     time_match = re.search(r'\b(\d+D\s*\d+H)\b', text)
     time_remaining = time_match.group(1) if time_match else None
-
-    #    (Optional) If Tesseract sometimes splits "13D" into "13" + "D",
-    #    you may want to parse them separately or do more robust checks.
 
     # 3. Objective: "Deal 15000 Damage" => verb, number, type
     objective_pattern = r'\b([A-Za-z]+)(?:\s+[a-zA-Z]+)?\s+(\d+)\s+(Damage|Enemies|Assists|KO Streak|Health)\b'
@@ -102,10 +92,10 @@ def _parse_challenge_data(text: str):
         exclude_set.add(progress_total)
 
     # 4. Regex for hero names (all-caps words, possibly multiple words)
-    heroes_pattern = r"\b[A-Z]+(?:[ & ]?[-&]?[ ]?[\n]?[A-Z]+)*\b"
+    heroes_pattern = r"\b[A-Z]+(?:[ & ]?[-&]?[ ]?[\n]?[ \n]?[ \n ]?[A-Z]+)*\b"
     all_caps_words = re.findall(heroes_pattern, text)
     # Filter out any uppercase words not considered heroes
-    exclusions = {"DEAL", "DAMAGE", "AS", "OR",
+    exclusions = {"DEAL", "DAMAGE", "AS", "OR", "SS", "LL",
                   "ENEMIES", "ASSIST", "KO", "NS", "INFLICT"}
     heroes = [word for word in all_caps_words if word not in exclusions]
 
@@ -132,10 +122,14 @@ def _parse_challenge_data(text: str):
 
 
 def get_missions_from_image(images_list: str):
+
+    missions_dict_raw = {}
     texts = ""
+
     for column in images_list:
         texts = texts + _get_text_from_image(column)
 
+    print(texts)
     text = texts.split("\n\n")
 
     for i in range(0, len(text)):
@@ -145,6 +139,9 @@ def get_missions_from_image(images_list: str):
 
 
 def get_counters(filtered_result):
+
+    hero_counter = Counter()
+    quest_counter = Counter()
 
     for entry in filtered_result.values():
         try:
@@ -206,9 +203,7 @@ def get_mission(hero):
     return None
 
 
-def sum_mission_count(mission):
-
-    global quest_counter
+def sum_mission_count(mission, quest_counter):
 
     if not isinstance(mission, str):
         return 0
@@ -240,7 +235,8 @@ def main(images_list):
     results_df['mission'] = results_df['hero'].apply(get_mission)
 
     results_df['mission'] = results_df['mission'].fillna("")
-    results_df['mission_count'] = results_df['mission'].apply(sum_mission_count)
+
+    results_df['mission_count'] = results_df['mission'].apply(lambda m: sum_mission_count(m, quest_counter))
 
     results_df['priority'] = results_df['count'] + results_df['mission_count']
 
@@ -248,185 +244,206 @@ def main(images_list):
 
     return final_df
 
-# final_df = main(images_list)
+storage_client = storage.Client()
 
-path = Path('photos')
-path.mkdir(parents=True, exist_ok=True)
+@ui.page('/')
+class IndexPage:
 
-uploaded_file_paths = []
-uploaded_images = []
+    def __init__(self):
+        """
+        The constructor is called once per user session.
+        We create *instance variables* instead of using global variables.
+        """
+        self.hero_counter = Counter()
+        self.quest_counter = Counter()
+        self.uploaded_images = []
+        self.uploaded_file_paths = []
+        self.left_drawer_visible = True
+        self.fs = gcsfs.GCSFileSystem()
+        self.fs.invalidate_cache()
+        self.missions_dict_raw={}
+        self.final_df = pd.DataFrame()
+        self.storage_client = storage.Client()
+        self.bucket = storage_client.bucket(bucket_name)
 
-os.makedirs('/tmp/photos', exist_ok=True)
-app.add_static_files('/photos', '/tmp/photos')
+        with ui.row().style('justify-content: space-between; width: 100%; height: 100%; align-items: center;'):
+            # This switch controls drawer visibility
+            self.toggle_switch = ui.switch('Show Images', value=True, on_change=self.toggle_drawer)
 
-def handle_upload(e: events.UploadEventArguments):
+        self.left_drawer = ui.left_drawer(top_corner=True, bottom_corner=True) \
+            .style('background-color: #1a1e2c') \
+            .bind_visibility_from(self.toggle_switch, 'value') \
+            .props('width=358 bordered')
 
-    global hero_counter, quest_counter, missions_dict_raw
+        with self.left_drawer:
+            ui.button("Process all uploaded images", on_click=self.process_all)
+            ui.upload(
+                label='Upload Images',
+                auto_upload=True,
+                on_upload=self.handle_upload,
+                multiple=True
+            ).props('accept=".jpeg,.jpg,.png"')
 
-    hero_counter = Counter()
-    quest_counter = Counter()
+            ui.label("Copy an image and click 'Paste Image' to upload.")
+            ui.button('Paste Image', on_click=self.read_clipboard_image)
+            self.image_display = ui.image().classes('w-72')
 
-    file_path = path / e.name
-    if file_path in uploaded_file_paths:
-        ui.notify(f"'{file_path.name}' has already been uploaded!", close_button='OK')
-        return
-
-    # Save to disk
-    with open(file_path, 'wb') as f:
-        f.write(e.content.read())
-
-    uploaded_file_paths.append(file_path)
-    print(f"File uploaded: {file_path}")
-
-    left_out = path / f"{file_path.stem}_left"
-    right_out = path / f"{file_path.stem}_right"
-
-    cut_image(file_path, left_out, right_out)
-
-    uploaded_images.append(Path(str(left_out)+'.png'))
-    uploaded_images.append(Path(str(right_out)+'.png'))
-
-@ui.page('/')  # Define a separate page to enable clipboard reading
-async def index():
-
-    global results_table, left_drawer, left_drawer_visible, toggle_switch, uploaded_images, uploaded_file_paths
-
-    async def read_clipboard_image():
-        """Reads an image from the clipboard and saves it."""
-        img = await ui.clipboard.read_image()
-
-        if not img:
-            ui.notify('You must copy an image to the clipboard first.', close_button='OK')
-            return
-
-        id = uuid.uuid4().hex
-        # Save image to disk
-        file_name = f"clipboard_upload_{id}.png"
-        file_path = path / file_name
-        uploaded_file_paths.append(file_path)
-        img.save(file_path, format="PNG")
-
-        print(f"Clipboard image saved: {file_path}")
-
-        # Notify and display the image
-        ui.notify("Clipboard image uploaded and saved!", close_button='OK')
-
-        left_out = path / f"{file_path.stem}_left"
-        right_out = path / f"{file_path.stem}_right"
-
-        cut_image(file_path, left_out, right_out)
-
-        uploaded_images.append(Path(str(left_out)+'.png'))
-        uploaded_images.append(Path(str(right_out)+'.png'))
-
-        image_display.set_source(file_path)
-
-    ui.label('Image Template').classes('text-lg font-bold mt-4')
-
-    ui.image('https://storage.googleapis.com/rivals-quests/clipboard_image.png')
-
-    with ui.row().style('justify-content: space-between; width: 100%; height: 100%; align-items: center;'):
-        toggle_switch = ui.switch('Show Images', value=left_drawer_visible, on_change=toggle_drawer)
-
-    left_drawer = ui.left_drawer(top_corner=True, bottom_corner=True). \
-        style('background-color: #1a1e2c').bind_visibility_from(toggle_switch, 'value'). \
-            props('width=358 bordered')
-
-    with left_drawer:
-        ui.button("Process all uploaded images", on_click=process_all)
-        ui.upload(
-            label='Upload Images',
-            auto_upload=True,
-            on_upload=handle_upload,
-            multiple=True
-        ).props('accept=".jpeg,.jpg,.png"')
-        # UI elements
-        """Main UI for clipboard-based image upload."""
-        ui.label("Copy an image and click 'Paste Image' to upload.")
-        ui.button('Paste Image', on_click=read_clipboard_image)
-        image_display = ui.image().classes('w-72')
-
-    ui.label('Results').classes('text-lg font-bold mt-4')
-    results_table = ui.table(
+        ui.label('Results').classes('text-lg font-bold mt-4')
+        # Build a table using your final_df (already loaded somewhere above)
+        self.results_table = ui.table(
             columns=[
                 {'name': 'hero', 'label': 'Hero', 'field': 'hero'},
                 {'name': 'count', 'label': 'Quests Count', 'field': 'count'},
                 {'name': 'role', 'label': 'Role', 'field': 'role'},
                 {'name': 'mission', 'label': 'Bonus Quests', 'field': 'mission'},
-                {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count'},
+                {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count', 'classes': 'hidden', 'headerClasses': 'hidden'},
                 {'name': 'priority', 'label': 'Total', 'field': 'priority'},
             ],
-            rows=final_df.to_dict(orient='records'),
-                    pagination={
-                        'rowsPerPage': 10,
-                        'rowsPerPageOptions': [5, 10, 25]
-                    }
-                )
+            rows=self.final_df.to_dict(orient='records'),
+            pagination={
+                'rowsPerPage': 10,
+                'rowsPerPageOptions': [5, 10, 25]
+            }
+        )
+
+    def handle_upload(self, e: events.UploadEventArguments):
+
+        self.final_df = pd.DataFrame()
+        self.hero_counter = Counter()
+        self.quest_counter = Counter()
+
+        unique_filename = f"{uuid.uuid4()}_{e.name}"
+        public_url = f"https://storage.googleapis.com/{bucket_name}/{unique_filename}"
+        buffer = e.content.read()
+
+        with self.fs.open(f"{bucket_name}/{unique_filename}", 'wb') as f_out:
+            f_out.write(buffer)
+
+        self.uploaded_file_paths.append(public_url)
+        ui.notify(f"File uploaded")
+
+        left_name = f"{uuid.uuid4()}_left"
+        right_name = f"{uuid.uuid4()}_right"
+
+        left_public_url, right_public_url = self.cut_image(public_url, left_name, right_name)
+
+        if left_public_url in self.uploaded_file_paths:
+            ui.notify(f"'{public_url}' has already been uploaded!", close_button='OK')
+            return
+
+        self.uploaded_images.append(left_public_url)
+        self.uploaded_images.append(right_public_url)
+
+    def cut_image(self, public_url, left_name, right_name):
+
+        global bucket_name
+
+        # Extract filename from URL
+        filename = public_url.split("/")[-1]
+
+        # Read the image from GCS into memory
+        with self.fs.open(f"{bucket_name}/{filename}", "rb") as f:
+            image_bytes = f.read()
+
+        # Convert bytes to a file-like object
+        image = Image.open(io.BytesIO(image_bytes))
+        width, height = image.size
+
+        left_box = (0, 0, width // 2, height)
+        right_box = (width // 2, 0, width, height)
+
+        left_image = image.crop(left_box).convert("RGB")
+        right_image = image.crop(right_box).convert("RGB")
+
+        segments = [
+            (left_image, left_name),
+            (right_image, right_name),
+        ]
+
+        public_urls = []
+        for cropped_img, name_suffix in segments:
+
+            file_id = str(uuid.uuid4())
+            filename_out = f"{file_id}_{name_suffix}.png"
+            gcs_path = f"{bucket_name}/{filename_out}"
+
+            buffer = io.BytesIO()
+            cropped_img.save(buffer, format="PNG")
+            buffer.seek(0)
+
+            with self.fs.open(gcs_path, 'wb') as f:
+                f.write(buffer.read())
+
+            public_url_out = f"https://storage.googleapis.com/{bucket_name}/{filename_out}"
+            public_urls.append(public_url_out)
+
+        return public_urls[0], public_urls[1]
+
+    def toggle_drawer(self):
+        if self.toggle_switch.value:
+            self.left_drawer.show()
+        else:
+            self.left_drawer.hide()
+
+    def process_all(self):
+
+        self.hero_counter = Counter()
+        self.quest_counter = Counter()
+
+        self.final_df = pd.DataFrame()
+
+        self.results_table.rows = []
+
+        if not self.uploaded_images:
+            ui.notify("No files uploaded yet!", close_button='OK')
+            return
+
+        self.final_df = main(self.uploaded_images)
+
+        if self.final_df.empty:
+            ui.notify("No data to display!", close_button='OK')
+            return
+        self.results_table.update_from_pandas(self.final_df)
+
+    async def read_clipboard_image(self):
+        """Reads an image from the clipboard and saves it per user session."""
+
+        global bucket_name
+        img = await ui.clipboard.read_image()
+        if not img:
+            ui.notify('You must copy an image to the clipboard first.', close_button='OK')
+            return
+
+        unique_filename = f"{uuid.uuid4()}_clipboard_upload.png"
+        public_url = f"https://storage.googleapis.com/{bucket_name}/{unique_filename}"
+
+        # Save to GCS
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+
+        with self.fs.open(f"{bucket_name}/{unique_filename}", 'wb') as f_out:
+            f_out.write(buffer.read())
+
+        ui.notify("Clipboard image uploaded and saved!", close_button='OK')
+        self.uploaded_file_paths.append(public_url)
+
+        # Cut the image
+        left_name = f"{uuid.uuid4()}_left"
+        right_name = f"{uuid.uuid4()}_right"
+        left_public_url, right_public_url = self.cut_image(public_url, left_name, right_name)
+
+        self.uploaded_images.append(left_public_url)
+        self.uploaded_images.append(right_public_url)
+
+        # Update UI element that displays the original image
+        self.image_display.set_source(public_url)
+
+    # Build your UI
+    ui.label('Image Template').classes('text-lg font-bold mt-4')
+    ui.image('https://storage.googleapis.com/rivals-quests/clipboard_image.png')
 
 
 image_display = ui.image().classes('w-72')
-
-
-def process_all():
-
-    global hero_counter, quest_counter, uploaded_images, final_df
-    hero_counter = Counter()
-    quest_counter = Counter()
-
-    final_df = pd.DataFrame()
-
-    results_table.rows = []
-
-    if not uploaded_file_paths:
-        ui.notify("No files uploaded yet!", close_button='OK')
-        return
-
-    final_df = main(uploaded_images)
-
-    if final_df.empty:
-        ui.notify("No data to display!", close_button='OK')
-        return
-    results_table.update_from_pandas(final_df)
-
-# Function to handle drawer visibility
-left_drawer_visible = True
-def toggle_drawer():
-    if toggle_switch.value:
-        left_drawer.show()
-    else:
-        left_drawer.hide()
-
-ui.label('Results').classes('text-lg font-bold mt-4')
-with ui.row().style('justify-content: space-between; width: 100%; height: 100%; align-items: center;'):
-    toggle_switch = ui.switch('Show Images', value=left_drawer_visible, on_change=toggle_drawer)
-
-left_drawer = ui.left_drawer(top_corner=True, bottom_corner=True). \
-    style('background-color: #1a1e2c').bind_visibility_from(toggle_switch, 'value'). \
-        props('width=358 bordered')
-
-with left_drawer:
-    ui.button("Process all uploaded images", on_click=process_all)
-    ui.upload(
-        label='Upload Images',
-        auto_upload=True,
-        on_upload=handle_upload,
-        multiple=True
-    ).props('accept=".jpeg,.jpg,.png"')
-
-results_table = ui.table(
-        columns=[
-            {'name': 'hero', 'label': 'Hero', 'field': 'hero'},
-            {'name': 'count', 'label': 'Quests Count', 'field': 'count'},
-            {'name': 'role', 'label': 'Role', 'field': 'role'},
-            {'name': 'mission', 'label': 'Bonus Quests', 'field': 'mission'},
-            {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count'},
-            {'name': 'priority', 'label': 'Total', 'field': 'priority'},
-        ],
-        rows=final_df.to_dict(orient='records'),
-                pagination={
-                    'rowsPerPage': 10,
-                    'rowsPerPageOptions': [5, 10, 25]
-                }
-            )
 
 ui.run(host='0.0.0.0', port=8080)
