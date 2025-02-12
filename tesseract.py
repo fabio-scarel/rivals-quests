@@ -286,13 +286,96 @@ def handle_upload(e: events.UploadEventArguments):
     uploaded_images.append(Path(str(left_out)+'.png'))
     uploaded_images.append(Path(str(right_out)+'.png'))
 
+@ui.page('/')  # Define a separate page to enable clipboard reading
+async def index():
+
+    global results_table, left_drawer, left_drawer_visible, toggle_switch, uploaded_images, uploaded_file_paths
+
+    async def read_clipboard_image():
+        """Reads an image from the clipboard and saves it."""
+        img = await ui.clipboard.read_image()
+
+        if not img:
+            ui.notify('You must copy an image to the clipboard first.', close_button='OK')
+            return
+
+        id = uuid.uuid4().hex
+        # Save image to disk
+        file_name = f"clipboard_upload_{id}.png"
+        file_path = path / file_name
+        uploaded_file_paths.append(file_path)
+        img.save(file_path, format="PNG")
+
+        print(f"Clipboard image saved: {file_path}")
+
+        # Notify and display the image
+        ui.notify("Clipboard image uploaded and saved!", close_button='OK')
+
+        left_out = path / f"{file_path.stem}_left"
+        right_out = path / f"{file_path.stem}_right"
+
+        cut_image(file_path, left_out, right_out)
+
+        uploaded_images.append(Path(str(left_out)+'.png'))
+        uploaded_images.append(Path(str(right_out)+'.png'))
+
+        image_display.set_source(file_path)
+
+    ui.label('Image Template').classes('text-lg font-bold mt-4')
+
+    ui.image('https://storage.googleapis.com/rivals-quests/clipboard_image.png')
+
+    with ui.row().style('justify-content: space-between; width: 100%; height: 100%; align-items: center;'):
+        toggle_switch = ui.switch('Show Images', value=left_drawer_visible, on_change=toggle_drawer)
+
+    left_drawer = ui.left_drawer(top_corner=True, bottom_corner=True). \
+        style('background-color: #1a1e2c').bind_visibility_from(toggle_switch, 'value'). \
+            props('width=358 bordered')
+
+    with left_drawer:
+        ui.button("Process all uploaded images", on_click=process_all)
+        ui.upload(
+            label='Upload Images',
+            auto_upload=True,
+            on_upload=handle_upload,
+            multiple=True
+        ).props('accept=".jpeg,.jpg,.png"')
+        # UI elements
+        """Main UI for clipboard-based image upload."""
+        ui.label("Copy an image and click 'Paste Image' to upload.")
+        ui.button('Paste Image', on_click=read_clipboard_image)
+        image_display = ui.image().classes('w-72')
+
+    ui.label('Results').classes('text-lg font-bold mt-4')
+    results_table = ui.table(
+            columns=[
+                {'name': 'hero', 'label': 'Hero', 'field': 'hero'},
+                {'name': 'count', 'label': 'Quests Count', 'field': 'count'},
+                {'name': 'role', 'label': 'Role', 'field': 'role'},
+                {'name': 'mission', 'label': 'Bonus Quests', 'field': 'mission'},
+                {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count'},
+                {'name': 'priority', 'label': 'Total', 'field': 'priority'},
+            ],
+            rows=final_df.to_dict(orient='records'),
+                    pagination={
+                        'rowsPerPage': 10,
+                        'rowsPerPageOptions': [5, 10, 25]
+                    }
+                )
+
+
+image_display = ui.image().classes('w-72')
+
+
 def process_all():
 
-    global hero_counter, quest_counter
+    global hero_counter, quest_counter, uploaded_images, final_df
     hero_counter = Counter()
     quest_counter = Counter()
 
     final_df = pd.DataFrame()
+
+    results_table.rows = []
 
     if not uploaded_file_paths:
         ui.notify("No files uploaded yet!", close_button='OK')
@@ -303,7 +386,6 @@ def process_all():
     if final_df.empty:
         ui.notify("No data to display!", close_button='OK')
         return
-
     results_table.update_from_pandas(final_df)
 
 # Function to handle drawer visibility
