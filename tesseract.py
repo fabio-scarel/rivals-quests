@@ -347,4 +347,4 @@ results_table = ui.table(
                 }
             )
 
-ui.run()
+ui.run(host='0.0.0.0', port=8080)
