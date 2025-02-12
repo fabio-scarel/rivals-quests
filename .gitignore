@@ -1,1 +1,19 @@
 photos/
+
+# Ignore environment variables
+.venv
+.venv.local
+
+# Ignore credentials
+*.key
+*.pem
+*.crt
+*.json
+
+# Ignore compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.cpython-*
