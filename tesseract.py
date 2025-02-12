@@ -284,27 +284,42 @@ class IndexPage:
                 multiple=True
             ).props('accept=".jpeg,.jpg,.png"')
 
-            ui.label("Copy an image and click 'Paste Image' to upload.")
+            ui.label("Copy an image and click 'Paste Image' to upload.").style('color: white')
             ui.button('Paste Image', on_click=self.read_clipboard_image)
             self.image_display = ui.image().classes('w-72')
 
-        ui.label('Results').classes('text-lg font-bold mt-4')
-        # Build a table using your final_df (already loaded somewhere above)
-        self.results_table = ui.table(
-            columns=[
-                {'name': 'hero', 'label': 'Hero', 'field': 'hero'},
-                {'name': 'count', 'label': 'Quests Count', 'field': 'count'},
-                {'name': 'role', 'label': 'Role', 'field': 'role'},
-                {'name': 'mission', 'label': 'Bonus Quests', 'field': 'mission'},
-                {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count', 'classes': 'hidden', 'headerClasses': 'hidden'},
-                {'name': 'priority', 'label': 'Total', 'field': 'priority'},
-            ],
-            rows=self.final_df.to_dict(orient='records'),
-            pagination={
-                'rowsPerPage': 10,
-                'rowsPerPageOptions': [5, 10, 25]
-            }
-        )
+        with ui.row():
+
+            with ui.column():
+                # Build your UI
+                ui.label('Tutorial').classes('text-lg font-bold mt-4')
+                ui.label('Use o screenshot abaixo como template de como tirar o print')
+                ui.label('Pode fazer o upload utilizando a caixa de upload ou simplesmente utilizar Win+Shift+S para tirar o print e colar a imagem com o \n botão "Paste Image"')
+                ui.label('Tire o print das quests que couber em uma pagina, cole a imagem, desça na pagina de quests, tire o próximo print, cole de novo até acabar a pagina')
+                ui.label('Pode fazer vários uploads e depois processar tudo junto')
+                ui.label('Para ver o resultado clique em "Process All Uploaded Images"')
+
+                ui.image('https://storage.googleapis.com/rivals-quests/clipboard_image.png').style('width: 800px; height: auto;')
+
+            with ui.column():
+                ui.label('Results').classes('text-lg font-bold mt-4')
+                # Build a table using your final_df (already loaded somewhere above)
+                self.results_table = ui.table(
+                    columns=[
+                        {'name': 'hero', 'label': 'Hero', 'field': 'hero'},
+                        {'name': 'count', 'label': 'Quests Count', 'field': 'count'},
+                        {'name': 'role', 'label': 'Role', 'field': 'role'},
+                        {'name': 'mission', 'label': 'Bonus Quests', 'field': 'mission'},
+                        {'name': 'mission_count', 'label': 'Bonus Count', 'field': 'mission_count', 'classes': 'hidden', 'headerClasses': 'hidden'},
+                        {'name': 'priority', 'label': 'Total', 'field': 'priority'},
+                    ],
+                    rows=self.final_df.to_dict(orient='records'),
+                    pagination={
+                        'rowsPerPage': 10,
+                        'rowsPerPageOptions': [5, 10, 25]
+                    }
+                )
+
 
     def handle_upload(self, e: events.UploadEventArguments):
 
@@ -438,10 +453,6 @@ class IndexPage:
 
         # Update UI element that displays the original image
         self.image_display.set_source(public_url)
-
-    # Build your UI
-    ui.label('Image Template').classes('text-lg font-bold mt-4')
-    ui.image('https://storage.googleapis.com/rivals-quests/clipboard_image.png')
 
 
 image_display = ui.image().classes('w-72')
